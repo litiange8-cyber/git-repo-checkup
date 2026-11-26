@@ -28,18 +28,27 @@ WEIGHTS = {
     "completeness": 15,  # README / 依赖清单 / 启动脚本完整度
 }
 
-# 克隆与扫描限制
-CLONE_DEPTH = 1
-CLONE_TIMEOUT_SEC = 120
-MAX_FILE_SIZE = 2 * 1024 * 1024   # 单文件最大 2MB，超过则跳过内容扫描
-MAX_SCAN_FILES = 5000             # 单仓库最大扫描文件数
-MAX_REPO_SIZE_MB = 100            # 克隆后仓库总大小上限，超过则拒绝分析
+def _env_int(name: str, default: int) -> int:
+    """读取整型环境变量，非法值回退默认值（避免配置错误导致启动失败）。"""
+    raw = os.getenv(name, "")
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
 
-# 服务端安全配置
-MAX_CONCURRENT_ANALYSIS = 3       # 同时分析的最大仓库数
-RATE_LIMIT_PER_MIN = 10           # 单 IP 每分钟最大请求数
-REPORT_TTL_SEC = 3600             # 报告缓存有效期（秒）
-REPORT_MAX_ENTRIES = 500          # 报告缓存最大条数
+
+# 克隆与扫描限制（均可通过环境变量覆盖）
+CLONE_DEPTH = 1
+CLONE_TIMEOUT_SEC = _env_int("CLONE_TIMEOUT_SEC", 120)
+MAX_FILE_SIZE = _env_int("MAX_FILE_SIZE_MB", 2) * 1024 * 1024  # 单文件上限
+MAX_SCAN_FILES = _env_int("MAX_SCAN_FILES", 5000)              # 单仓库扫描文件数上限
+MAX_REPO_SIZE_MB = _env_int("MAX_REPO_SIZE_MB", 100)           # 仓库总体积上限
+
+# 服务端安全配置（均可通过环境变量覆盖）
+MAX_CONCURRENT_ANALYSIS = _env_int("MAX_CONCURRENT_ANALYSIS", 3)
+RATE_LIMIT_PER_MIN = _env_int("RATE_LIMIT_PER_MIN", 10)
+REPORT_TTL_SEC = _env_int("REPORT_TTL_SEC", 3600)
+REPORT_MAX_ENTRIES = _env_int("REPORT_MAX_ENTRIES", 500)
 
 def _parse_origins(raw: str) -> list[str]:
     parts = [o.strip() for o in raw.split(",") if o.strip()]

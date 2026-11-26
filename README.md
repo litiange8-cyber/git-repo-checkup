@@ -52,12 +52,27 @@ npm run dev
 |---|---|---|
 | `API_TOKEN` | 空 | 配置后 `/api/analyze` 需携带 `Authorization: Bearer <token>` |
 | `CORS_ORIGINS` | 本地 5173 端口 | 允许的来源，逗号分隔 |
-| `RATE_LIMIT_PER_MIN` | 10 | 单 IP 每分钟请求上限 |
+| `RATE_LIMIT_PER_MIN` | 10 | 单 IP 每分钟请求上限（含失败请求，防 Token 爆破） |
 | `MAX_CONCURRENT_ANALYSIS` | 3 | 同时分析的最大仓库数 |
 | `REPORT_TTL_SEC` | 3600 | 报告缓存有效期（秒） |
+| `REPORT_MAX_ENTRIES` | 500 | 报告缓存最大条数 |
 | `MAX_REPO_SIZE_MB` | 100 | 单仓库体积上限 |
+| `MAX_SCAN_FILES` | 5000 | 单仓库扫描文件数上限 |
+| `MAX_FILE_SIZE_MB` | 2 | 单文件大小上限 |
+| `CLONE_TIMEOUT_SEC` | 120 | 克隆超时（秒） |
 
-详见 `backend/.env.example`。
+所有配置项均通过 `os.getenv` 读取，非法整数自动回退默认值。详见 `backend/.env.example`。
+
+## Docker 单镜像部署
+
+Dockerfile 已包含前端构建与静态托管，单容器即可提供完整服务：
+
+```bash
+docker build -t git-repo-checkup .
+docker run -p 8000:8000 --env-file backend/.env git-repo-checkup
+```
+
+访问 `http://localhost:8000/` 即为前端页面，`/api/*` 为后端接口。本地开发仍用前后端分离模式（Vite 5173 + uvicorn 8000）。
 
 ## 说明
 

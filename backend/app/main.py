@@ -1,14 +1,17 @@
 """FastAPI 入口：提供分析接口、AI 建议与 HTML 报告导出。"""
 import asyncio
+import hmac
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import (
     API_TOKEN, CORS_ORIGINS, DEEPSEEK_API_KEY, MAX_CONCURRENT_ANALYSIS,
@@ -76,7 +79,7 @@ def verify_auth(authorization: str | None = Header(default=None)):
         return  # 未配置 Token 时开放访问（本地开发默认）
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="需要 Bearer Token")
-    if authorization[7:].strip() != API_TOKEN:
+    if not hmac.compare_digest(authorization[7:].strip(), API_TOKEN):
         raise HTTPException(status_code=403, detail="Token 无效")
 
 
@@ -133,18 +136,23 @@ def _analyze_sync(req: AnalyzeRequest) -> AnalyzeResult:
             scan.cleanup()
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
 @app.post("/api/analyze", response_model=AnalyzeResult)
 async def analyze(req: AnalyzeRequest, request: Request, authorization: str | None = Header(default=None)):
+    # 限流前置：失败请求（401/403）同样计入配额，防止 Token 爆破
+    _check_rate_limit(_client_ip(request))
     verify_auth(authorization)
-    client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_ip)
     result = await _run_analysis(req)
     result.report_id = _store_report(result)
     return result
 
 
 @app.get("/api/report/{report_id}", response_class=HTMLResponse)
-def get_report(report_id: str):
+def get_report(report_id: str, request: Request):
+    _check_rate_limit(_client_ip(request))
     with _report_lock:
         entry = REPORTS.get(report_id)
     if not entry:
@@ -155,3 +163,10 @@ def get_report(report_id: str):
             REPORTS.pop(report_id, None)
         raise HTTPException(status_code=404, detail="报告已过期，请重新分析")
     return HTMLResponse(content=render_report(result))
+
+
+# ---- 托管前端静态资源（Docker 单镜像部署）----
+# 路径：项目根/frontend/dist；本地开发时该目录可能不存在，跳过挂载
+_STATIC_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="frontend")
