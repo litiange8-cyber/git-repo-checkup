@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 
-from ..config import CLONE_DEPTH, CLONE_TIMEOUT_SEC, MAX_FILE_SIZE, MAX_SCAN_FILES
+from ..config import CLONE_DEPTH, CLONE_TIMEOUT_SEC, MAX_FILE_SIZE, MAX_SCAN_FILES, MAX_REPO_SIZE_MB
 
 
 class RepoError(Exception):
@@ -78,9 +78,17 @@ def _clone(owner: str, repo: str, dest: str):
     except subprocess.TimeoutExpired:
         raise RepoError(f"克隆超时（超过 {CLONE_TIMEOUT_SEC} 秒），请确认仓库为公开且体积适中")
     if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "").strip().splitlines()
-        tail = msg[-1] if msg else "未知错误"
-        raise RepoError(f"克隆失败：{tail[:300]}（请确认链接为公开 GitHub 仓库）")
+        # 不回显 git 原文，按常见失败类型映射为用户可读提示
+        raw = ((proc.stderr or "") + (proc.stdout or "")).lower()
+        if "not found" in raw or "could not read username" in raw or "authentication failed" in raw:
+            raise RepoError("仓库不存在或非公开，请检查链接是否正确")
+        if "repository not found" in raw:
+            raise RepoError("仓库不存在或非公开，请检查链接是否正确")
+        if "timed out" in raw or "connection" in raw:
+            raise RepoError("拉取仓库时网络超时，请稍后重试")
+        if "rate limit" in raw:
+            raise RepoError("GitHub 访问频率受限，请稍后重试")
+        raise RepoError("拉取仓库失败，请确认链接为公开 GitHub 仓库")
 
 
 def _looks_text(data: bytes) -> bool:
@@ -99,6 +107,17 @@ def scan_repo(url: str) -> ScanResult:
     result = ScanResult(tmp_dir=tmp, repo_name=f"{owner}/{repo}")
     try:
         _clone(owner, repo, tmp)
+        # 仓库总体积上限：防止超大仓库打满磁盘
+        total_bytes = 0
+        max_bytes = MAX_REPO_SIZE_MB * 1024 * 1024
+        for root, _, filenames in os.walk(tmp):
+            for name in filenames:
+                try:
+                    total_bytes += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+                if total_bytes > max_bytes:
+                    raise RepoError(f"仓库体积超过 {MAX_REPO_SIZE_MB}MB 上限，已拒绝分析")
         for root, dirs, filenames in os.walk(tmp):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
             for name in filenames:

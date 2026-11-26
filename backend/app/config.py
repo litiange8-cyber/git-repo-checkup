@@ -32,4 +32,21 @@ WEIGHTS = {
 CLONE_DEPTH = 1
 CLONE_TIMEOUT_SEC = 120
 MAX_FILE_SIZE = 2 * 1024 * 1024   # 单文件最大 2MB，超过则跳过内容扫描
-MAX_SCAN_FILES = 8000             # 单仓库最大扫描文件数
+MAX_SCAN_FILES = 5000             # 单仓库最大扫描文件数
+MAX_REPO_SIZE_MB = 100            # 克隆后仓库总大小上限，超过则拒绝分析
+
+# 服务端安全配置
+MAX_CONCURRENT_ANALYSIS = 3       # 同时分析的最大仓库数
+RATE_LIMIT_PER_MIN = 10           # 单 IP 每分钟最大请求数
+REPORT_TTL_SEC = 3600             # 报告缓存有效期（秒）
+REPORT_MAX_ENTRIES = 500          # 报告缓存最大条数
+
+def _parse_origins(raw: str) -> list[str]:
+    parts = [o.strip() for o in raw.split(",") if o.strip()]
+    return parts if parts else ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+# CORS 白名单：生产环境通过 CORS_ORIGINS 环境变量配置（逗号分隔）
+CORS_ORIGINS = _parse_origins(os.getenv("CORS_ORIGINS", ""))
+
+# 可选 API Token 鉴权：配置后 /api/analyze 需携带 Authorization: Bearer <token>
+API_TOKEN = os.getenv("API_TOKEN", "")

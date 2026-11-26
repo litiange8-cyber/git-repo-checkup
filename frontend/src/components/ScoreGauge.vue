@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
-import * as echarts from 'echarts'
+import echarts from '../echarts'
 
 const props = defineProps({ score: { type: Number, default: 0 }, threshold: { type: Number, default: 80 } })
 const el = ref(null)

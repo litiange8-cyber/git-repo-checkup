@@ -16,7 +16,7 @@
 | 硬编码路径 | 20 | `C:\`、`/Users/`、`/home/`、`/opt/`、UNC 路径，每处 5 分 |
 | 文档与脚本完整度 | 15 | README 8 分（存在 3 + 描述 2 + 启动 3）、依赖清单 4 分、启动脚本 3 分 |
 
-误报控制：跳过二进制/大文件与 lock 文件；文档中的路径与 Token 示例不计；占位符（`your-*`、`sk-xxxx` 等）过滤；同一文件同类问题只扣一次。
+误报控制：跳过二进制/大文件与 lock 文件；文档示例、Dockerfile 内部路径、测试目录不计分；占位符（`your-*`、`sk-xxxx` 等）过滤；同一文件同一行同类问题只扣一次。测试资源中的凭证保留为 `info` 级 finding 供审计，但不扣分。
 
 ## 本地运行
 
@@ -44,9 +44,25 @@ npm run dev
 - `POST /api/analyze` — 请求体 `{"repo_url": "...", "use_ai": true}`，返回结构化分析结果
 - `GET /api/report/{report_id}` — 独立的 HTML 报告页
 
+## 服务端安全配置（可选）
+
+通过环境变量或 `backend/.env` 配置：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `API_TOKEN` | 空 | 配置后 `/api/analyze` 需携带 `Authorization: Bearer <token>` |
+| `CORS_ORIGINS` | 本地 5173 端口 | 允许的来源，逗号分隔 |
+| `RATE_LIMIT_PER_MIN` | 10 | 单 IP 每分钟请求上限 |
+| `MAX_CONCURRENT_ANALYSIS` | 3 | 同时分析的最大仓库数 |
+| `REPORT_TTL_SEC` | 3600 | 报告缓存有效期（秒） |
+| `MAX_REPO_SIZE_MB` | 100 | 单仓库体积上限 |
+
+详见 `backend/.env.example`。
+
 ## 说明
 
 - 仅支持 `https://github.com/owner/repo` 形式的公开仓库，拒绝本地路径、SSH 与带凭据 URL。
-- 克隆采用 `--depth 1` 浅克隆，单文件上限 2MB，单仓库上限 8000 文件。
+- 克隆采用 `--depth 1` 浅克隆，单文件上限 2MB，单仓库 5000 文件 / 100MB 上限。
 - 密钥检测基于字符串匹配，存在误报/漏报可能，请人工复核。
 - `.env` 已加入 `.gitignore`，密钥不会随代码入库。
+- `POST /api/analyze` 和 `GET /api/report/{id}` 均受 IP 限流保护；报告缓存 1 小时后过期。

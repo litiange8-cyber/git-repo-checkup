@@ -13,9 +13,11 @@ TEST_MARK = ("test_", "_test", ".test.", ".spec.", "tests/", "spec/", "__tests__
 # ---- README 内容判定 ----
 README_RE = re.compile(r"^readme(\.[a-z0-9]+)?$", re.I)
 DESC_RE = re.compile(
-    r"(?:^#{1,3}\s*)(?:about|简介|项目介绍|项目简介|description|overview|概述|介绍)\b|"
+    # 英文标题需 \b 边界；中文标题不能用 \b（中文非单词字符），用前瞻空格/行尾/标点替代
+    r"(?:^#{1,3}\s*)(?:about|description|overview)\b|"
+    r"(?:^#{1,3}\s*)(?:简介|项目介绍|项目简介|概述|介绍)(?=\s|$|[：:。.、])|"
     r"(?:本项目|这个项目|一个(?:用于|基于)|a (?:simple|python|node|library|tool|framework|web))",
-    re.I,
+    re.I | re.M,
 )
 START_RE = re.compile(
     r"\b(?:quick\s*start|getting\s*started|install(?:ation)?|usage|run(?:ning)?|"
@@ -76,15 +78,6 @@ SYSTEM_PATH_SAFE = re.compile(
 ESCAPE_SEQ_RE = re.compile(r"\\[ntrxubfv0NZ]|\\[uU][0-9a-fA-F]{4}")
 
 
-def _norm_path(path: str) -> str:
-    """规范化路径用于去重：保留盘符/用户前缀与前两级目录。"""
-    parts = re.split(r"[\\/]+", path)
-    parts = [p for p in parts if p]
-    if len(parts) >= 3:
-        return "/".join(parts[:3])
-    return path
-
-
 def _hardcoded_deduct(hits: list["Hit"], total_files: int) -> int:
     """按命中密度扣分：命中文件占比越高扣分越多，避免大仓库被海量示例路径扣满。"""
     if not hits or total_files <= 0:
@@ -96,15 +89,24 @@ def _hardcoded_deduct(hits: list["Hit"], total_files: int) -> int:
     return min(20, max(3, math.ceil(density * 50)))
 
 # ---- 密钥与敏感信息 ----
+# 每条规则：(key, 正则, 扣分, 描述)。扣分档：20=高危凭证，15=中危，10=通用赋值
 SECRET_PATTERNS = [
-    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), 20, "疑似 OpenAI API 密钥 (sk-)"),
+    # OpenAI 旧版 sk- 与新版 sk-proj-（项目密钥含连字符）
+    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"), 20, "疑似 OpenAI API 密钥 (sk-/sk-proj-)"),
     ("aliyun_akid", re.compile(r"\b(?:AKID|LTAI)[A-Za-z0-9]{12,}\b"), 20, "疑似阿里云 AccessKey ID"),
+    ("aws_akid", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16,20}\b"), 20, "疑似 AWS AccessKey ID"),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{30,}\b"), 20, "疑似 GitHub Token"),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), 20, "疑似 Slack Token"),
+    ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"), 20, "疑似 Stripe 密钥"),
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"), 20, "私钥文件入库"),
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b"), 15, "疑似 Bearer Token"),
     ("generic_secret", re.compile(
         r"(?:api[_-]?key|secret|token|passwd|password|access[_-]?key)\s*[:=]\s*[\"']"
         r"[A-Za-z0-9_\-]{16,}[\"']", re.I), 10, "疑似硬编码密钥/口令"),
 ]
+# 测试资源中的凭证类命中：保留 finding 供审计，但不扣分（severity 降为 info）
+TEST_EXEMPT_KEYS = {"openai_key", "aliyun_akid", "aws_akid", "github_token",
+                    "slack_token", "stripe_key", "private_key", "bearer", "generic_secret"}
 ENV_FILE_RE = re.compile(r"^\.env(?:\.[A-Za-z0-9_-]+)?$", re.I)
 ENV_SAFE_RE = re.compile(r"^\.env\.(?:example|sample|template|dist|default)$", re.I)
 
@@ -230,8 +232,8 @@ def detect_hardcoded(files: list[tuple[str, str]]) -> tuple[CategoryResult, list
     hits: list[Hit] = []
     seen: set[tuple[str, int, str]] = set()
     for p, content in files:
-        # 文档示例与 Dockerfile 内部路径均不计入（容器内部路径是构建规范）
-        if _is_doc(p) or DOCKER_FILE_RE.search(p):
+        # 文档示例、Dockerfile 内部路径、测试目录均不计入
+        if _is_doc(p) or DOCKER_FILE_RE.search(p) or _is_test(p):
             continue
         for lineno, line in enumerate(content.splitlines(), 1):
             stripped = line.strip()
@@ -273,15 +275,17 @@ def detect_secrets(files: list[tuple[str, str]]) -> tuple[CategoryResult, list[F
 
     for p, content in files:
         base = os.path.basename(p)
-        # .env 入库检测（排除示例模板）
+        is_doc = _is_doc(p)
+        is_test = _is_test(p)
+        # .env 入库检测（排除示例模板与测试目录）
         if ENV_FILE_RE.match(base) and not ENV_SAFE_RE.match(base):
             hits.append(Hit(
                 key="secrets", file=p, line=1, snippet=f"环境配置文件入库：{base}",
-                deduct=15, message=".env 环境配置文件入库", severity="high",
+                deduct=0 if is_test else 15,
+                message=".env 环境配置文件入库" + ("（测试资源，未扣分）" if is_test else ""),
+                severity="info" if is_test else "high",
             ))
 
-        is_doc = _is_doc(p)
-        is_test = _is_test(p)
         for lineno, line in enumerate(content.splitlines(), 1):
             for key, pattern, deduct, label in SECRET_PATTERNS:
                 m = pattern.search(line)
@@ -291,19 +295,22 @@ def detect_secrets(files: list[tuple[str, str]]) -> tuple[CategoryResult, list[F
                 # 占位符/示例过滤
                 if PLACEHOLDER_RE.search(val):
                     continue
-                # sk- / AKID / Bearer / 通用赋值在文档与测试文件中多为示例，降级或跳过
-                if key in {"openai_key", "aliyun_akid", "bearer", "generic_secret"}:
-                    if is_doc:
-                        continue
-                    if is_test:
-                        deduct = max(5, deduct // 2)
+                # 文档中的凭证示例直接跳过
+                if key in TEST_EXEMPT_KEYS and is_doc:
+                    continue
+                # 测试资源中的凭证：保留 finding 供审计，但不扣分（info 级）
+                severity = "high" if deduct >= 15 else "medium"
+                if key in TEST_EXEMPT_KEYS and is_test:
+                    deduct = 0
+                    severity = "info"
                 dedup_key = (p, lineno, key)
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
                 hits.append(Hit(
                     key="secrets", file=p, line=lineno, snippet=_snippet(line),
-                    deduct=deduct, message=label, severity="high" if deduct >= 15 else "medium",
+                    deduct=deduct, message=label + ("（测试资源，未扣分）" if deduct == 0 else ""),
+                    severity=severity,
                 ))
 
     return _build_result("secrets", "密钥与敏感信息", max_score, hits)

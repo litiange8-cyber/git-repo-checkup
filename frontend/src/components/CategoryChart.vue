@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
-import * as echarts from 'echarts'
+import echarts from '../echarts'
 
 const props = defineProps({ categories: { type: Array, default: () => [] } })
 const el = ref(null)
